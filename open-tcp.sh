@@ -1,5 +1,5 @@
-#!/bin/bash
 
+#!/bin/bash
 
 if [ -d /etc/openvpn ]; then
     systemctl stop openvpn
@@ -62,6 +62,57 @@ openvpn_auth_files(){
     chmod +x /etc/openvpn/umanager.sh
 
 }
+
+configure_iptable(){
+
+    # Get primary NIC device name
+    NIC=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+    PROTOCOL="tcp"
+echo "#!/bin/sh
+iptables -t nat -I POSTROUTING 1 -s 10.8.0.0/24 -o $NIC -j MASQUERADE
+iptables -I INPUT 1 -i tun0 -j ACCEPT
+iptables -I FORWARD 1 -i $NIC -o tun0 -j ACCEPT
+iptables -I FORWARD 1 -i tun0 -o $NIC -j ACCEPT
+iptables -I INPUT 1 -i $NIC -p $PROTOCOL --dport $ovpn_port -j ACCEPT" >/etc/openvpn/add-iptables-rules.sh
+
+# Script to remove rules
+echo "#!/bin/sh
+iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o $NIC -j MASQUERADE
+iptables -D INPUT -i tun0 -j ACCEPT
+iptables -D FORWARD -i $NIC -o tun0 -j ACCEPT
+iptables -D FORWARD -i tun0 -o $NIC -j ACCEPT
+iptables -D INPUT -i $NIC -p $PROTOCOL --dport $ovpn_port -j ACCEPT" >/etc/openvpn/rm-iptables-rules.sh
+
+echo "[Unit]
+Description=iptables rules for OpenVPN
+Before=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/openvpn/add-iptables-rules.sh
+ExecStop=/etc/openvpn/rm-iptables-rules.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target" >/etc/systemd/system/iptables-openvpn.service
+
+    chmod +x /etc/openvpn/add-iptables-rules.sh
+    chmod +x /etc/openvpn/rm-iptables-rules.sh
+
+    systemctl daemon-reload
+    systemctl enable iptables-openvpn
+    systemctl start iptables-openvpn
+}
+
+
+configure_ip_forward(){
+
+    # Make ip forwading and make it persistent
+    echo 1 > "/proc/sys/net/ipv4/ip_forward"
+    echo "net.ipv4.ip_forward = 1" >> "/etc/sysctl.conf"
+}
+
 
 configure_server_conf(){
     mkdir /etc/openvpn/ccd
@@ -145,6 +196,8 @@ configure_client_conf
 configre_rules
 configre_ufw
 openvpn_auth_files
+configure_iptable
+configure_ip_forward
 start_openvpn
 get_client_generator
 complete_install
