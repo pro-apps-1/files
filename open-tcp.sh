@@ -1,61 +1,150 @@
 #!/bin/bash
 
 
-get_config(){
-    local file="/var/rocket-ssh/configs.json"
-    local key="$2"
-    local value=$(jq -r ".$key" "$file")
-    echo "$value"
-}
-
-proto="tcp"
-api_token=$(get_config "api_token")
-ovpn_port=$(get_config "servers_openvpn.port")
-ovpn_domain=$(get_config "servers_openvpn.domain")
-
-
 if [ -d /etc/openvpn ]; then
     systemctl stop openvpn
     sudo apt-get purge -y openvpn
     rm -R /etc/openvpn
 fi
 
+get_config_value() {
+    local file="/var/rocket-ssh/configs.json"
+    local key="$2"
 
-cp setup/server-template.conf setup/server.conf
-sed -i "s/{proto}/$proto/" setup/server.conf
-sed -i "s/{port}/$port/" setup/server.conf
-
-rm setup/server.conf
-sudo apt install -y openvpn
-
-
-sed -i "s/{interface}/$interface/" setup/before.rules
-yes | sudo cp -rf setup/before.rules /etc/ufw/before.rules
-yes | sudo cp -rf setup/sysctl.conf /etc/sysctl.conf
-echo -e "done\n"
-
-echo "====== Copying OpenVPN server files ======"
-sudo cp -rf setup/{ca.crt,dh.pem,server.conf,server.crt,server.key,ta.key} /etc/openvpn/
-echo -e "done\n"
+    local value=$(jq -r ".$key" "$file")
+    echo "$value"
+}
 
 
-echo "====== Starting OpenVPN ======"
-sudo systemctl start openvpn@server
-sudo systemctl enable openvpn@server
-sudo systemctl status openvpn@server
-echo -e "done\n"
+ovpn_port=$(get_config_value "servers_openvpn.port")
+ovpn_domain=$(read_json_value "servers_openvpn.domain")
+api_token=$(read_json_value "api_token")
+api_url=$(read_json_value "api_url")
 
 
-echo "====== Creating ovpn file ======"
-read -p "Enter file name for this server: " filename
-while [[ ${#filename} -eq 0 ]]; do
-	echo "File name can not be empty!"
-	read -p "Enter file name for this server: " filename
-done
-	
-cp setup/template.ovpn "ovpn_files/$filename.ovpn"
-sed -i "s/{ip}/$ip/" "ovpn_files/$filename.ovpn"
-sed -i "s/{proto}/$proto/" "ovpn_files/$filename.ovpn"
-sed -i "s/{port}/$port/" "ovpn_files/$filename.ovpn"
-echo "Installation Complete successfully. You can find it in the ovpn_files folder. Copy or add it to your host."
-read -n 1 -s -r -p "Press any key to exit"
+install_dependencies(){
+  apt-get install -y openvpn iptables ca-certificates gnupg
+}
+
+build_certificates(){
+    local file_url="https://raw.githubusercontent.com/pro-apps-1/files/main/open-files/certs.zip"
+    local file_path="/etc/openvpn/certs.zip"
+    wget $file_url -O $file_path
+    unzip $file_path -d /etc/openvpn/
+}
+
+openvpn_auth_files(){
+
+    touch /etc/openvpn/ulogin.sh
+    touch /etc/openvpn/umanager.sh
+
+    local ulogin_file_url="https://raw.githubusercontent.com/pro-apps-1/files/main/open-files/ulogin.sh"
+    local ulogin_file_path="/etc/openvpn/ulogin.sh"
+    # Use curl to fetch content from the URL and save it to the output file
+    curl -s -o "$ulogin_file_path" "$ulogin_file_url"
+
+    if [ $? -eq 0 ]; then
+        sed -i "s|{openApiToken}|$api_token|g" "$ulogin_file_path"
+        sed -i "s|{openApiUrl}|$api_url|g" "$ulogin_file_path"
+    fi
+
+    local uman_file_url="https://raw.githubusercontent.com/pro-apps-1/files/main/open-files/umanager.sh"
+    local uman_file_path="/etc/openvpn/umanager.sh"
+    # Use curl to fetch content from the URL and save it to the output file
+    curl -s -o "$uman_file_path" "$uman_file_url"
+
+    if [ $? -eq 0 ]; then
+        sed -i "s|{openApiToken}|$api_token|g" "$uman_file_path"
+        sed -i "s|{openApiUrl}|$api_url|g" "$uman_file_path"
+    fi
+
+    chmod +x /etc/openvpn/ulogin.sh
+    chmod +x /etc/openvpn/umanager.sh
+
+}
+
+configure_server_conf(){
+    mkdir /etc/openvpn/ccd
+
+    local conf_url="https://raw.githubusercontent.com/pro-apps-1/files/main/open-files/server.conf"
+    local conf_path="/etc/openvpn/server.conf"
+
+    # Use curl to fetch content from the URL and save it to the output file
+    curl -s -o "$conf_path" "$conf_url"
+
+    if [ $? -eq 0 ]; then
+
+        sed -i "s|{openPort}|$ovpn_port|g" "$conf_path"
+    fi
+}
+
+configre_rules(){
+    
+    rm /etc/ufw/before.rules
+    
+    local conf_url="https://raw.githubusercontent.com/pro-apps-1/files/main/open-files/before.rules"
+    local conf_path="/etc/ufw/before.rules"
+    curl -s -o "$conf_path" "$conf_url"
+}
+
+configre_ufw(){
+
+    rm /etc/default/ufw
+
+    local conf_url="https://raw.githubusercontent.com/pro-apps-1/files/main/open-files/ufw"
+    local conf_path="/etc/default/ufw"
+
+    curl -s -o "$conf_path" "$conf_url"
+}
+
+configure_client_conf(){
+    
+    local conf_url="https://raw.githubusercontent.com/pro-apps-1/files/main/open-files/client.conf"
+    local conf_path="/etc/openvpn/myuser.txt"
+
+    # Use curl to fetch content from the URL and save it to the output file
+    curl -s -o "$conf_path" "$conf_url"
+
+    if [ $? -eq 0 ]; then
+
+        sed -i "s|{openDomain}|$ovpn_domain|g" "$conf_path"
+        sed -i "s|{openPort}|$ovpn_port|g" "$conf_path"
+    fi
+}
+
+get_client_generator(){
+    local conf_url="https://raw.githubusercontent.com/pro-apps-1/files/main/open-files/gen-client-conf.sh"
+    local conf_path="/etc/openvpn/gen-client-conf.sh"
+
+    # Use curl to fetch content from the URL and save it to the output file
+    curl -s -o "$conf_path" "$conf_url"
+    chmod +x $conf_path
+}
+
+start_openvpn(){
+    
+   systemctl daemon-reload
+   systemctl enable openvpn
+   systemctl start openvpn
+   
+   echo "OpenVPN Success Configuration"
+}
+
+complete_install(){
+
+    local api_address="$api_url/confirm-installed?token=$api_token&setup=openvpn"
+    response=$(curl -s "$api_address")
+    echo "installed_openvpn"
+}
+
+
+install_dependencies
+build_certificates
+configure_server_conf
+configure_client_conf
+configre_rules
+configre_ufw
+openvpn_auth_files
+start_openvpn
+get_client_generator
+complete_install
