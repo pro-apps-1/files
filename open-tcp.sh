@@ -8,11 +8,17 @@ if [ -d /etc/openvpn ]; then
 fi
 
 get_config_value() {
-    local file="/var/rocket-ssh/configs.json"
-    local key="$2"
-
-    local value=$(jq -r ".$key" "$file")
-    echo "$value"
+    local configs_file_path="/var/rocket-ssh/configs.json"
+    local path="$1"
+    
+    local jq_query=".${path}"
+    
+    # Use jq to find the value at the constructed path
+    if jq -e "$jq_query" "$configs_file_path" > /dev/null; then
+        jq -r "$jq_query" "$configs_file_path"
+    else
+        exit 1
+    fi
 }
 
 
