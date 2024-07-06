@@ -23,9 +23,9 @@ get_config_value() {
 
 
 ovpn_port=$(get_config_value "servers_openvpn.port")
-ovpn_domain=$(read_json_value "servers_openvpn.domain")
-api_token=$(read_json_value "api_token")
-api_url=$(read_json_value "api_url")
+ovpn_domain=$(get_config_value "servers_openvpn.domain")
+api_token=$(get_config_value "api_token")
+api_url=$(get_config_value "api_url")
 
 
 install_dependencies(){
